@@ -2,11 +2,6 @@ pipeline {
 
     agent any
 
-    tools {
-        jdk 'JDK17'
-        maven 'Maven3'
-    }
-
     environment {
         IMAGE_NAME = "shipment-service"
         TAG = "${BUILD_NUMBER}"
