@@ -10,7 +10,9 @@ pipeline {
     environment {
         IMAGE_NAME = "shipment-service"
         TAG = "${BUILD_NUMBER}"
-        DOCKERHUB_CREDENTIALS = "dockerhub-creds"
+        DOCKERHUB_CREDENTIALS = "dockerhub"
+        DOCKERHUB_USER = "gurugowdamn"
+        SONAR_SERVER = "SonarQube"
     }
 
     stages {
@@ -35,35 +37,50 @@ pipeline {
 
         stage('SonarQube Analysis') {
             steps {
-                withSonarQubeEnv('SonarQube') {
+                withSonarQubeEnv("${SONAR_SERVER}") {
                     sh 'mvn sonar:sonar'
                 }
             }
         }
 
-        stage('Trivy Scan') {
+        stage('Trivy FS Scan') {
             steps {
-                sh 'trivy fs . > trivy-report.txt || true'
+                sh 'trivy fs . --format table -o trivy-fs-report.txt || true'
             }
         }
 
-        stage('Docker Build') {
+        stage('Docker Build & Tag') {
             steps {
                 sh """
                 docker build -t ${IMAGE_NAME}:${TAG} .
+
+                docker tag ${IMAGE_NAME}:${TAG} ${DOCKERHUB_USER}/${IMAGE_NAME}:${TAG}
+                docker tag ${IMAGE_NAME}:${TAG} ${DOCKERHUB_USER}/${IMAGE_NAME}:latest
+                """
+            }
+        }
+
+        stage('Trivy Image Scan') {
+            steps {
+                sh """
+                trivy image ${DOCKERHUB_USER}/${IMAGE_NAME}:${TAG} \
+                --format table -o trivy-image-report.txt || true
                 """
             }
         }
 
         stage('Docker Push') {
             steps {
-                withCredentials([usernamePassword(credentialsId: DOCKERHUB_CREDENTIALS,
-                                                 usernameVariable: 'USER',
-                                                 passwordVariable: 'PASS')]) {
+                withCredentials([usernamePassword(
+                    credentialsId: "${DOCKERHUB_CREDENTIALS}",
+                    usernameVariable: 'USER',
+                    passwordVariable: 'PASS'
+                )]) {
                     sh """
                     echo $PASS | docker login -u $USER --password-stdin
-                    docker tag ${IMAGE_NAME}:${TAG} $USER/${IMAGE_NAME}:${TAG}
-                    docker push $USER/${IMAGE_NAME}:${TAG}
+
+                    docker push ${DOCKERHUB_USER}/${IMAGE_NAME}:${TAG}
+                    docker push ${DOCKERHUB_USER}/${IMAGE_NAME}:latest
                     """
                 }
             }
@@ -74,7 +91,20 @@ pipeline {
                 sh """
                 docker stop shipment || true
                 docker rm shipment || true
-                docker run -d --name shipment -p 8084:8080 $USER/${IMAGE_NAME}:${TAG}
+
+                docker run -d \
+                --name shipment \
+                -p 8084:8080 \
+                ${DOCKERHUB_USER}/${IMAGE_NAME}:${TAG}
+                """
+            }
+        }
+
+        stage('Verify Deployment') {
+            steps {
+                sh """
+                sleep 10
+                curl -f http://localhost:8084/api/shipments || true
                 """
             }
         }
@@ -82,8 +112,16 @@ pipeline {
 
     post {
         always {
-            archiveArtifacts artifacts: '**/target/*.jar', fingerprint: true
+            archiveArtifacts artifacts: '**/*.txt', fingerprint: true
             echo 'Pipeline execution completed'
+        }
+
+        success {
+            echo 'SUCCESS: Deployment completed successfully'
+        }
+
+        failure {
+            echo 'FAILED: Check logs for errors'
         }
     }
 }
